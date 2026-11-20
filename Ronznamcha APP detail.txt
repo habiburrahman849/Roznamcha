@@ -1,0 +1,293 @@
+You are a senior Flutter engineer. Build a complete, production-quality mobile app called
+"Roznamcha" — a free, offline-first bookkeeping + invoicing app for small physical sellers
+(kirana stores, shops, vendors).
+
+Do NOT integrate any bank, payment gateway, QR, OAuth, or webhook. Payments are only
+manually labeled as CASH or BANK TRANSFER. The app must work 100% offline.
+
+=====================================================================
+1. PRODUCT SUMMARY
+=====================================================================
+Roznamcha lets a small shop owner:
+  1. Record daily sales & purchases (a "roznamcha" / ledger).
+  2. Create beautiful branded invoices and share them via WhatsApp.
+  3. Track money as Cash in hand vs Bank transfer.
+  4. See a simple finance dashboard (today's sale, top products, totals).
+
+Target user: a single shop owner on a low-end Android phone, often offline.
+Tone: simple, local, fast, beautiful. Urdu/English-friendly labels later (v1 = English).
+
+=====================================================================
+2. TECH STACK (use exactly this)
+=====================================================================
+- Flutter (stable channel), null safety, Material 3
+- State management: Riverpod (flutter_riverpod)
+- Local DB: drift (SQLite) OR sqflite — pick drift for type-safe queries
+- PDF generation: `pdf` package
+- Render/share PDF image: `printing` package (sharePdf)
+- WhatsApp deep link: `url_launcher` → https://wa.me/<phone>?text=<encoded>
+- Charts: `fl_chart`
+- Image picking (shop logo): `image_picker`
+- Paths: `path_provider`
+- Date formatting: `intl`
+- No backend. No auth. No network calls required for core features.
+
+Folder structure (feature-first):
+  lib/
+    main.dart
+    app.dart
+    core/
+      theme/app_theme.dart
+      utils/currency.dart
+      utils/date_utils.dart
+    data/
+      db/app_database.dart        (drift)
+      db/tables.dart
+      repositories/shop_repository.dart
+      repositories/product_repository.dart
+      repositories/customer_repository.dart
+      repositories/entry_repository.dart
+      repositories/invoice_repository.dart
+    features/
+      onboarding/onboarding_screen.dart
+      home/home_screen.dart
+      ledger/ledger_screen.dart
+      ledger/add_entry_sheet.dart
+      products/products_screen.dart
+      products/product_form.dart
+      customers/customers_screen.dart
+      invoice/invoice_builder_screen.dart
+      invoice/invoice_preview_screen.dart
+      invoice/pdf/invoice_pdf.dart
+      reports/reports_screen.dart
+      settings/settings_screen.dart
+    widgets/ (shared: primary_button, empty_state, stat_card, etc.)
+
+=====================================================================
+3. DATA MODEL (drift tables)
+=====================================================================
+shop(
+  id INTEGER PK (always 1 — single shop),
+  name TEXT NOT NULL,
+  ownerName TEXT,
+  phone TEXT,
+  logoPath TEXT,
+  createdAt DATETIME
+)
+
+products(
+  id INTEGER PK AUTOINCREMENT,
+  name TEXT NOT NULL,
+  price REAL NOT NULL,
+  unit TEXT,               -- e.g. "kg", "pcs"
+  createdAt DATETIME
+)
+
+customers(
+  id INTEGER PK AUTOINCREMENT,
+  name TEXT NOT NULL,
+  phone TEXT,              -- used for WhatsApp
+  createdAt DATETIME
+)
+
+entries(                   -- roznamcha line items (sale/purchase)
+  id INTEGER PK AUTOINCREMENT,
+  type TEXT NOT NULL,      -- 'SALE' | 'PURCHASE'
+  amount REAL NOT NULL,
+  paymentType TEXT NOT NULL, -- 'CASH' | 'BANK'
+  note TEXT,
+  createdAt DATETIME NOT NULL
+)
+
+invoices(
+  id INTEGER PK AUTOINCREMENT,
+  customerId INTEGER NULL REFERENCES customers(id),
+  customerName TEXT,       -- denormalized snapshot
+  customerPhone TEXT,
+  subtotal REAL NOT NULL,
+  discount REAL NOT NULL DEFAULT 0,
+  total REAL NOT NULL,
+  paymentType TEXT NOT NULL, -- 'CASH' | 'BANK'
+  status TEXT NOT NULL,    -- always 'PAID' in v1
+  createdAt DATETIME NOT NULL
+)
+
+invoice_items(
+  id INTEGER PK AUTOINCREMENT,
+  invoiceId INTEGER NOT NULL REFERENCES invoices(id),
+  productId INTEGER NULL,
+  name TEXT NOT NULL,
+  qty REAL NOT NULL,
+  price REAL NOT NULL,
+  lineTotal REAL NOT NULL
+)
+
+Rules:
+- Every invoice is PAID on creation (v1 has no credit/pending).
+- An invoice creation ALSO inserts a matching entry(type='SALE', amount=total,
+  paymentType=invoice.paymentType) so the ledger and finance stay in sync.
+- Deleting an entry/invoice must be soft-safe (confirm dialog).
+
+=====================================================================
+4. SCREENS & FLOWS
+=====================================================================
+
+(1) First-launch Onboarding
+    - If shop row doesn't exist → show onboarding.
+    - Fields: Shop name (required), Owner name (optional), Phone (optional),
+      Logo (optional image picker).
+    - On save → insert shop row → go to Home.
+    - Never show onboarding again unless shop deleted.
+
+(2) Home / Dashboard
+    - Top: shop name + logo, greeting.
+    - "Today" stat cards: Today's Sale (Rs.), Cash in hand, Bank transfer.
+    - Big action buttons: [+ Sale] [+ Purchase] [+ Invoice]
+    - "Top Products" horizontal list (top 5 by qty sold this month).
+    - "Recent invoices" list (last 5) → tap opens invoice preview.
+    - Bottom nav: Home | Roznamcha | Products | Reports | Settings
+
+(3) Add Sale / Add Purchase (bottom sheet or full screen)
+    - Type is preset by which button was tapped.
+    - Amount (numeric keypad), Payment type toggle (Cash | Bank), optional note.
+    - Save → insert entry → refresh dashboard + ledger.
+
+(4) Roznamcha (Ledger)
+    - Grouped by date (Today, Yesterday, then date sections).
+    - Each row: type icon, amount, paymentType chip, note, time.
+    - Date filter (calendar range) in app bar.
+    - Floating totals bar: Cash total, Bank total, Net (sale - purchase).
+
+(5) Products
+    - List of products with price.
+    - Add/Edit form: name, price, unit.
+    - Swipe or menu to delete (with confirm).
+
+(6) Customers
+    - Simple list + add form (name + phone).
+    - Used in invoice builder. Optional — invoice can also accept a one-off name/phone.
+
+(7) Create Invoice (builder)
+    - Step 1: Customer (pick existing OR enter name + phone inline).
+    - Step 2: Add line items:
+        • Pick from products (opens product list)
+        • OR type custom item name + qty + price
+        • Line total auto-calculates; running subtotal shown.
+        • Ability to edit qty / remove line.
+    - Step 3: Discount (amount, optional).
+    - Step 4: Payment type (Cash | Bank).
+    - Button: "Generate Invoice" → save invoice + items + auto-create SALE entry →
+      open Invoice Preview.
+
+(8) Invoice Preview
+    - Render the branded PDF as an on-screen preview (use printing's PdfPreview
+      OR render a Flutter widget that mirrors the PDF).
+    - Actions: [Share to WhatsApp] [Save PDF] [New Invoice]
+    - Share to WhatsApp:
+        • If customer phone exists → https://wa.me/<digitsOnlyPhone>?text=<message>
+        • If no phone → https://wa.me/?text=<message> (user picks contact)
+        • Message includes shop name, total, and a short thank-you line.
+        • NOTE: wa.me can't attach files. Also offer "Share PDF" via `printing.sharePdf`
+          so the user can attach the PDF inside WhatsApp manually. Make this clear in UI
+          with a small helper text: "Attach the PDF after WhatsApp opens."
+
+(9) Reports / Finance
+    - Segmented: Today | This Week | This Month | Custom
+    - Show: Total Sale, Total Purchase, Cash in hand, Bank transfer, Net.
+    - Chart: sales trend (bar) via fl_chart for the selected range.
+    - "Top Products" table (name, qty, revenue).
+
+(10) Settings
+    - Edit shop details (name, owner, phone, logo).
+    - Currency symbol (default "Rs.").
+    - "Export data" → dump invoices+entries to a CSV in app documents (optional v1).
+    - About + version.
+
+=====================================================================
+5. INVOICE PDF DESIGN (branded, beautiful)
+=====================================================================
+Create lib/features/invoice/pdf/invoice_pdf.dart exporting:
+  Future<Uint8List> buildInvoicePdf({required Shop shop, required Invoice invoice,
+                                       required List<InvoiceItem> items, String currency = 'Rs.'})
+
+Layout:
+    - Header: logo (if exists) on left, shop name + owner + phone on right.
+    - Thin divider.
+    - "INVOICE" title + invoice # (id) + date.
+    - Customer block (name + phone).
+    - Items table: #, Item, Qty, Price, Total. Zebra striping.
+    - Totals block right-aligned: Subtotal, Discount, TOTAL (bold, larger).
+    - Payment badge: "PAID — CASH" or "PAID — BANK TRANSFER".
+    - Footer: "Thank you for your business" + shop phone.
+    - Use Material-ish colors (primary indigo/teal), generous spacing, A4 page.
+
+=====================================================================
+6. THEME & UX RULES
+=====================================================================
+- Material 3, seed color: deep teal (#0F766E) or indigo. Light theme only for v1.
+- Large tap targets, big numeric inputs, thumb-friendly bottom buttons.
+- Use bottom sheets for quick adds.
+- Currency formatting: use intl NumberFormat with the shop's symbol.
+- All money displayed with 0 or 2 decimals (pick 0 for cleanliness in PKR; make it a setting).
+- Empty states with friendly illustration (use an icon + text; no external assets required).
+- Snackbars for save/delete confirmations.
+- Confirm dialogs for destructive actions.
+
+=====================================================================
+7. OFFLINE / DATA RULES
+=====================================================================
+- 100% offline. No network calls in v1.
+- All data in local SQLite (drift).
+- App must start and fully function in airplane mode.
+- No login, no permissions beyond photos (for logo) and storage (for PDF).
+- Handle Android back navigation cleanly.
+
+=====================================================================
+8. QUALITY BAR (definition of done)
+=====================================================================
+- `flutter analyze` returns zero errors/warnings.
+- App builds and runs on Android (min SDK 21) and iOS.
+- All screens reachable, all CRUD works, invoice PDF generates and shares.
+- Dashboard numbers match ledger data (verified by manual test).
+- Invoice creation adds a matching SALE entry (verified).
+- No hardcoded strings in widgets — use a simple constants file.
+- Code is organized per the folder structure above, with comments only where
+  logic is non-obvious.
+
+=====================================================================
+9. DELIVERABLES (what you should produce)
+=====================================================================
+1. Complete pubspec.yaml with all dependencies pinned.
+2. Full lib/ tree with all files implemented (no TODO stubs — real logic).
+3. drift database + DAOs + generated code instructions
+   (`dart run build_runner build --delete-conflicting-outputs`).
+4. All screens/widgets implemented and wired with Riverpod providers.
+5. Invoice PDF builder + WhatsApp share utility + share-PDF utility.
+6. A README.md with:
+     - setup steps
+     - how to run
+     - how invoice PDF + WhatsApp share works
+     - known v1 limitations (no attach-in-wa.me, no cloud sync)
+7. Sample seed data (optional debug flag) so the app isn't empty on first run.
+
+=====================================================================
+10. OUT OF SCOPE (do NOT build in v1)
+=====================================================================
+- Bank integration, OAuth, QR, webhooks, payment gateways
+- WhatsApp Business API
+- Cloud sync / login / multi-user
+- Inventory stock tracking, taxes/GST
+- Credit/pending invoices (all invoices are PAID)
+- Localization (Urdu) — English only in v1, but keep strings centralized for later.
+
+Build it end-to-end. Start by creating the project, then implement in this order:
+  (a) pubspec + theme + drift DB + repositories
+  (b) onboarding + home
+  (c) ledger + add entry
+  (d) products + customers
+  (e) invoice builder + preview + PDF + WhatsApp
+  (f) reports + settings
+  (g) polish, empty states, confirm dialogs, README
+
+After each phase, run `flutter analyze` and fix issues before continuing.
+gr
